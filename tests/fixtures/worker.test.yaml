@@ -1,0 +1,78 @@
+apiVersion: openworker/v1
+kind: Worker
+
+identity:
+  name: TestWorker
+  employee_id: OW-TEST-001
+  status: active
+
+org:
+  department: Testing
+  reports_to:
+    name: Test Manager
+    email: test-manager@example.com
+    role: Test Lead
+
+role:
+  title: Test Worker
+  pack: general
+  description: Minimal worker for harness testing.
+
+autonomy:
+  level: L2
+  label: Junior
+  approval_mode: required
+  trust_score: 50
+  promotion_threshold: 90
+
+base_skills: [email, web_search, task_logger, escalation]
+role_skills: []
+
+tools:
+  allowed:
+    - name: web_search
+      description: Search the web
+    - name: read_file
+      description: Read a local file
+  approval_required:
+    - name: email_send
+      description: Send an email
+      approver: reports_to
+      sla_hours: 2
+  blocked:
+    - payroll_systems
+    - hr_systems
+    - production_databases
+
+approvals:
+  channel: slack
+  slack_channel: "#test-approvals"
+  auto_approve_after_sla: false
+  rejected_action_behavior: log_and_notify
+
+model:
+  provider: anthropic
+  name: claude-haiku-4-5
+  api_key_env: ANTHROPIC_API_KEY
+  require_on_prem: false
+  max_context_tokens: 10000
+
+cost:
+  human_equivalent_annual_usd: 0
+  monthly_budget_usd: 10
+  budget_alert_percent: 80
+  per_task_budget_usd: 0.50
+  on_budget_exceeded: pause_and_notify
+
+audit:
+  log_all_actions: true
+  log_level: verbose
+  retention_days: 7
+  export_format: jsonl
+  pii_scrubbing: false
+
+runtime:
+  session_memory: session_only
+  memory_backend: supabase
+  execution_backend: n8n
+  version: "0.1.0"

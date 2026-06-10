@@ -1,0 +1,333 @@
+# ============================================================
+# OpenWorker Worker Spec v0.1
+# https://github.com/openworker-io/openworker
+# ============================================================
+# This file defines a digital worker — an AI agent employed
+# inside an organization with a persistent identity, scoped
+# tools, an approval chain, and a trust score.
+# Think of it as: job description + permission manifest + HR record
+# ============================================================
+
+apiVersion: openworker/v1
+kind: Worker
+
+# ------------------------------------------------------------
+# IDENTITY
+# Who this worker is inside the organization
+# ------------------------------------------------------------
+identity:
+  name: Maya
+  display_name: "Maya — Marketing Assistant"
+  avatar_initials: MA
+  employee_id: OW-2025-0042          # auto-assigned on registration
+  hired_date: "2025-03-01"
+  status: active                      # active | suspended | onboarding | retired
+
+# ------------------------------------------------------------
+# ORGANIZATIONAL PLACEMENT
+# Where this worker sits in the org chart
+# ------------------------------------------------------------
+org:
+  department: Marketing
+  team: Content & Campaigns
+  reports_to:
+    name: Sarah Johnson
+    email: sarah.johnson@company.com
+    role: Marketing Manager
+  backup_approver:                    # used when reports_to is OOO
+    name: James Okafor
+    email: james.okafor@company.com
+  cost_center: MKT-001
+
+# ------------------------------------------------------------
+# ROLE DEFINITION
+# What this worker does — the job description in machine form
+# ------------------------------------------------------------
+role:
+  title: Junior Marketing Assistant
+  pack: marketer                      # base role pack to load
+  description: >
+    Maya drafts and schedules marketing content across LinkedIn,
+    email campaigns, and internal newsletters. She researches
+    competitors, generates image concepts, and prepares campaign
+    performance summaries for her manager's review.
+  primary_language: en
+  secondary_languages: []
+
+# ------------------------------------------------------------
+# AUTONOMY
+# How much the worker can do without asking for permission
+# L1 = Intern    (observe + suggest only)
+# L2 = Junior    (execute, all actions need approval)
+# L3 = Mid       (execute low-risk freely, high-risk needs approval)
+# L4 = Senior    (execute most tasks, escalate exceptions only)
+# L5 = Lead      (can coordinate other workers)
+# ------------------------------------------------------------
+autonomy:
+  level: L2                           # current level
+  label: Junior
+  approval_mode: required             # required | selective | autonomous
+  trust_score: 87                     # 0–100, updated by runtime after each task
+  trust_score_updated: "2025-05-28"
+  promotion_threshold: 95             # trust score needed to trigger L3 review
+
+# ------------------------------------------------------------
+# BASE SKILLS
+# Capabilities every worker gets on day 1 (loaded automatically)
+# These come from the OpenWorker base skill pack
+# ------------------------------------------------------------
+base_skills:
+  - email                             # read, draft, send (with approval)
+  - calendar                          # view, create events, send invites
+  - messaging                         # Teams, Slack — read and post
+  - video_calls                       # Zoom, Meet — join and summarize
+  - document_reader                   # read/summarize docs, PDFs, sheets
+  - web_search                        # research and browse
+  - policy_rag                        # company knowledge base (see knowledge section)
+  - task_logger                       # auto-log all actions to audit trail
+  - escalation                        # know when and how to escalate to manager
+
+# ------------------------------------------------------------
+# ROLE SKILLS
+# Capabilities specific to this worker's role pack
+# ------------------------------------------------------------
+role_skills:
+  - linkedin_draft                    # compose LinkedIn posts and articles
+  - email_campaigns                   # build and manage HubSpot campaigns
+  - image_generation                  # generate images via approved tools
+  - seo_research                      # keyword research and meta content
+  - content_calendar                  # manage editorial calendar
+  - competitor_monitoring             # track competitor content and news
+  - newsletter_builder                # compose internal/external newsletters
+  - campaign_reporting                # pull and summarize campaign metrics
+
+# ------------------------------------------------------------
+# TOOL PERMISSIONS
+# What tools this worker can touch — and how
+# Three tiers: allowed (free to use) | approval (needs human sign-off) | blocked
+# ------------------------------------------------------------
+tools:
+  allowed:
+    # Worker can use these freely without asking
+    - name: web_search
+      description: "Search for research, competitor info, trends"
+    - name: linkedin_draft
+      description: "Draft LinkedIn posts (cannot publish)"
+    - name: google_docs_read
+      description: "Read shared marketing docs"
+    - name: hubspot_read
+      description: "Read campaign performance data"
+    - name: canva_create
+      description: "Create and edit design assets"
+    - name: slack_read
+      description: "Read channels she is a member of"
+    - name: slack_post_dm
+      description: "DM her manager and direct teammates"
+    - name: calendar_read
+      description: "View team calendar"
+    - name: image_gen
+      description: "Generate images via approved provider"
+
+  approval_required:
+    # Worker must request approval before executing
+    - name: linkedin_publish
+      description: "Publish any post to LinkedIn company page"
+      approver: reports_to
+      sla_hours: 4                    # escalate to backup if no response in 4h
+    - name: email_send_external
+      description: "Send email to any external address"
+      approver: reports_to
+      sla_hours: 2
+    - name: hubspot_campaign_launch
+      description: "Launch or modify a live email campaign"
+      approver: reports_to
+      sla_hours: 8
+    - name: ad_budget_spend
+      description: "Spend or adjust any advertising budget"
+      approver: reports_to
+      sla_hours: 2
+    - name: calendar_create_external
+      description: "Create meetings that include external guests"
+      approver: reports_to
+      sla_hours: 2
+    - name: slack_post_public
+      description: "Post to any public or general Slack channels"
+      approver: reports_to
+      sla_hours: 1
+
+  blocked:
+    # Hard stops — never allowed regardless of context or instruction
+    - payroll_systems
+    - hr_systems
+    - production_databases
+    - financial_erp
+    - customer_pii_export
+    - code_repositories
+    - infrastructure_tools
+    - legal_document_signing
+
+# ------------------------------------------------------------
+# KNOWLEDGE
+# What this worker knows about the company
+# Loaded into context at the start of every session
+# ------------------------------------------------------------
+knowledge:
+  policy_docs:
+    - name: "Brand voice guide"
+      source: gdrive://marketing/brand-voice-2025.pdf
+    - name: "Social media policy"
+      source: gdrive://hr/policies/social-media-policy.pdf
+    - name: "Campaign approval process"
+      source: gdrive://marketing/campaign-approval-sop.pdf
+  tone_profile: >
+    Friendly, professional, never salesy. Always leads with value.
+    Avoids jargon. Oxford comma. US English. No em-dashes.
+  knowledge_refresh_cron: "0 6 * * 1"  # reload every Monday at 6am
+
+# ------------------------------------------------------------
+# BEHAVIOR
+# How this worker thinks and communicates
+# ------------------------------------------------------------
+behavior:
+  default_language: en
+  proactive_updates: true             # sends status updates without being asked
+  escalation_style: polite            # polite | urgent | minimal
+  working_hours:                      # only acts during these hours (local tz)
+    timezone: America/New_York
+    monday_friday: "09:00–18:00"
+    saturday: "off"
+    sunday: "off"
+  max_autonomous_actions_per_hour: 10 # rate limit before pausing for check-in
+  hallucination_guard: strict         # strict | standard — extra self-checks on facts
+
+# ------------------------------------------------------------
+# APPROVAL WORKFLOW CONFIG
+# How approvals are routed and notified
+# ------------------------------------------------------------
+approvals:
+  channel: slack                      # slack | email | teams | webhook
+  slack_channel: "#maya-approvals"
+  approval_message_format: >
+    *Maya is requesting approval*
+    Action: {action}
+    Context: {context}
+    Draft: {content_preview}
+    [Approve] [Reject] [Request Changes]
+  auto_approve_after_sla: false       # never auto-approve — always wait for human
+  rejected_action_behavior: log_and_notify  # log_and_notify | retry_with_changes | escalate
+
+# ------------------------------------------------------------
+# PERFORMANCE TRACKING
+# Metrics used to update trust score and inform promotion decisions
+# ------------------------------------------------------------
+performance:
+  tracking_enabled: true
+  metrics:
+    - tasks_completed
+    - approval_rate                   # % approved without changes
+    - rejection_rate
+    - escalations_initiated
+    - avg_approval_wait_hours
+  review_cadence: monthly             # manager gets monthly summary
+  trust_score_formula: >
+    weighted average of:
+    approval_rate (50%) +
+    low_rejection_rate (30%) +
+    appropriate_escalations (20%)
+
+# ------------------------------------------------------------
+# AUDIT & COMPLIANCE
+# Everything Maya does is logged
+# ------------------------------------------------------------
+audit:
+  log_all_actions: true
+  log_level: verbose                  # verbose | standard | minimal
+  retention_days: 365
+  export_format: jsonl
+  pii_scrubbing: true                 # scrub PII from logs before storage
+  compliance_tags:
+    - gdpr
+    - can-spam
+
+# ------------------------------------------------------------
+# LLM MODEL CONFIG
+# Which model powers this worker — cloud, local, or hybrid
+#
+# provider options:
+#   anthropic   → Claude API (cloud, outbound call)
+#   openai      → OpenAI API (cloud, outbound call)
+#   ollama      → local model via Ollama (fully on-prem, zero outbound)
+#   openrouter  → route to cheapest available model automatically
+#   vllm        → self-hosted vLLM server inside VPC
+#   custom      → any OpenAI-compatible endpoint (set base_url)
+#
+# The runtime resolves this at startup and injects the right client.
+# Switching provider = change two lines. No code change needed.
+# ------------------------------------------------------------
+model:
+  provider: anthropic                 # anthropic | openai | ollama | openrouter | vllm | custom
+  name: claude-sonnet-4-6             # model name/tag for the chosen provider
+
+  # Fallback: if primary model is unavailable, try this
+  fallback:
+    provider: anthropic
+    name: claude-haiku-4-5
+
+  # For on-prem / self-hosted providers
+  base_url: null                      # e.g. http://ollama:11434 or http://vllm-server:8000/v1
+  api_key_env: ANTHROPIC_API_KEY      # env var name — never hardcode keys in spec
+
+  # Data residency: if true, runtime REFUSES to use any cloud provider
+  # Forces on-prem only — hard stop if provider is anthropic/openai/openrouter
+  require_on_prem: false              # set true for air-gapped / regulated deployments
+
+  # Context window — set to model's actual limit
+  max_context_tokens: 100000
+
+# ------------------------------------------------------------
+# COST MANAGEMENT
+# Budget caps that make the ROI case transparent to the CFO.
+# The runtime enforces these — workers pause and notify manager
+# when any limit is approached or hit.
+#
+# Human equivalent reference: use this to benchmark whether
+# the AI worker is cheaper than a human doing the same role.
+# A junior marketing assistant in DMV = ~$55K/yr = ~$4,583/mo
+# ------------------------------------------------------------
+cost:
+  # Human equivalent salary for this role (annual, USD)
+  # Used only for dashboard ROI comparison — not enforced
+  human_equivalent_annual_usd: 55000
+
+  # Hard monthly spend cap — worker PAUSES when hit, notifies manager
+  monthly_budget_usd: 500             # if Maya costs more than this, something is wrong
+
+  # Soft warning threshold — manager gets notified at this % of monthly budget
+  budget_alert_percent: 80            # alert at $400 of $500
+
+  # Per-task spend cap — single task cannot exceed this
+  per_task_budget_usd: 2.00           # prevents runaway loops on one task
+
+  # Per-session token limit — guards against context blowup
+  max_tokens_per_session: 200000
+
+  # Action: what happens when monthly budget is hit
+  on_budget_exceeded: pause_and_notify   # pause_and_notify | suspend | notify_only
+
+  # Cost tracking granularity
+  track_per_task: true                # log input/output tokens + cost for every task
+  track_per_tool: true                # break down cost by which tools were called
+
+  # Billing period reset day (1 = 1st of each month)
+  billing_reset_day: 1
+
+# ------------------------------------------------------------
+# RUNTIME CONFIG
+# Execution backend and memory settings
+# ------------------------------------------------------------
+runtime:
+  session_memory: persistent          # persistent | session_only
+  memory_backend: supabase
+  execution_backend: n8n              # n8n | zapier | custom_webhook
+  webhook_url: null                   # set if execution_backend is custom_webhook
+  version: "0.1.0"
