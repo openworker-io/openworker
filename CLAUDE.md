@@ -1,5 +1,6 @@
 # OpenWorker — CLAUDE.md
 # Master brief for Claude Code (Opus)
+# Updated: 2026-06-16 (v2 — incorporates architectural decisions from design session)
 # Read this fully before writing a single line of code.
 
 ---
@@ -19,17 +20,22 @@ AI without governance. OpenWorker is the governance layer.
 One-liner: "Hire AI workers. Govern them like staff."
 
 Competitor context:
-- OpenClaw, CrewAI, LangGraph = how to BUILD agents
-- OpenWorker = how to EMPLOY and GOVERN them
+- OpenClaw, CrewAI, LangGraph, DeepAgents = how to BUILD agents
+- Squad (bradygaster) = AI dev team for coding only, no governance
+- Viktor (viktor.com) = AI employee in Slack, closed SaaS, no governance
+- Nextiva XBert = voice bot only, closed, no governance
 - NVIDIA NemoClaw = enterprise security add-on (validates our thesis)
 - 3E "AI Control Plane" = same idea, enterprise-only, expensive
-- OpenWorker = open source, SMB-first, deploy in 10 minutes
+- OpenWorker = open source, SMB-first, self-hosted, governed, deploy in 10 min
+
+Domain: openworker.io (purchased 2026-06-16)
+GitHub: github.com/openworker-io/openworker
 
 ---
 
 ## Core concepts
 
-### Worker Spec (YAML)
+### Worker Spec (YAML) — files in Git, never in database
 Every AI worker is defined by a YAML file. It combines:
 - Identity (name, role, department, hire date)
 - Org placement (reports_to, backup_approver)
@@ -39,8 +45,12 @@ Every AI worker is defined by a YAML file. It combines:
 - Tool permissions (allowed / approval_required / blocked)
 - Knowledge (company policy docs via RAG)
 - Cost config (monthly budget, per-task cap, human equivalent salary)
-- LLM model config (provider, fallback, on-prem option)
+- LLM model config (provider, fallback, require_on_prem option)
+- Meeting config (Recall.ai for Zoom/Teams/Meet, wake word, TTS voice)
 - Audit config
+
+Worker specs live in Git — not in a database. They are
+infrastructure-as-code: version-controlled, PR-reviewed, auditable.
 
 ### Autonomy Levels
 L1 Intern   — observe and suggest only, cannot execute
@@ -52,12 +62,12 @@ L5 Lead     — can coordinate and assign other workers
 Trust score (0-100) drives promotion between levels.
 Promotion is always human-initiated based on trust score.
 
-### Five Worker Templates (already specced in YAML)
+### Five Worker Templates (YAML complete)
 1. Maya         — Marketing Assistant (reference implementation)
 2. Codera-QA    — Software Tester
 3. Codera-Review — Code Reviewer
-4. Aryan        — Idea → Plan Advisor
-5. Layla        — Customer Support (voice-capable, most complex)
+4. Aryan        — Idea → Plan Advisor (first demo target)
+5. Layla        — Customer Support (voice-capable, Phase 3)
 
 ### Five Harness Layers (inside-out)
 Layer 1: Input Validator    — sanitise, detect injection, scope check
@@ -81,240 +91,201 @@ Every outbound action passes back through all 5 layers before executing.
 6. **BLOCKED is hardcoded Python** — not in YAML, not overridable by prompt
 7. **auto_approve_after_sla is always false** — humans approve, never timeout
 8. **require_on_prem enforced at startup** — fails before any task runs
+9. **Graceful degradation** — every connector has a free/local fallback
+10. **Task state persisted before transition** — crash-safe, resumable
+11. **ToolAccessRequest never auto-grants** — always requires manager approval
+12. **Demo works with only ANTHROPIC_API_KEY** — everything else degrades gracefully
+
+---
+
+## Storage architecture — where everything lives
+
+| Data | Storage | Why |
+|------|---------|-----|
+| Worker specs (YAML) | Git files | Infrastructure-as-code |
+| Connector config | connectors.yaml (Git) | Same |
+| Skill files | Git files | Same |
+| Task state machine | Supabase Postgres | Crash recovery, queryable |
+| Audit log | Supabase + local jsonl | Immutable, compliance |
+| Approvals | Supabase Postgres | Manager dashboard |
+| Tool access requests | Supabase Postgres | Approval workflow |
+| Trust scores | Supabase Postgres | Updated per task |
+| Episodic memory | Supabase Postgres | Past task summaries |
+| Semantic memory (RAG) | Supabase pgvector | Embedded company knowledge |
+| Working memory | Redis (TTL 1hr) | Fast, ephemeral |
+| n8n job queue | Redis | Bull queue, crash-safe |
 
 ---
 
 ## Tech stack
 
-| Component         | Technology                        |
-|-------------------|-----------------------------------|
-| Language          | Python 3.12                       |
-| LLM               | Claude API (anthropic SDK)        |
-| Local LLM option  | Ollama (OpenAI-compatible API)    |
-| Workflow engine   | n8n (approval routing)            |
-| Database          | Supabase (Postgres + pgvector)    |
-| Containerisation  | Docker + docker-compose           |
-| Dashboard         | Next.js (React)                   |
-| Approval channel  | Slack (Block Kit messages)        |
-| Voice (Layla)     | Deepgram STT + ElevenLabs TTS     |
-| Secrets           | env vars / AWS Secrets Manager    |
-| Package manager   | pip / requirements.txt            |
+| Component          | Technology                          |
+|--------------------|-------------------------------------|
+| Language           | Python 3.12                         |
+| LLM — cloud        | Claude API (anthropic SDK)          |
+| LLM — local        | Ollama (OpenAI-compatible API)      |
+| LLM — self-hosted  | vLLM (any HuggingFace model)        |
+| Workflow engine    | n8n queue mode (Redis + workers)    |
+| Database           | Supabase (Postgres + pgvector)      |
+| Cache / queue      | Redis                               |
+| Containerisation   | Docker + docker-compose             |
+| Dashboard (Phase 2)| Next.js + Tailwind + shadcn/ui      |
+| Approval channel   | Slack (Block Kit) / stdout fallback |
+| Web search         | Brave Search / DuckDuckGo fallback  |
+| Web crawl          | Firecrawl / Crawl4AI fallback       |
+| Voice STT          | Deepgram / Whisper local fallback   |
+| Voice TTS          | ElevenLabs / OpenAI TTS fallback    |
+| Meetings           | Recall.ai (Zoom + Teams + Meet)     |
+| SMS                | Twilio / stdout fallback            |
+| Secrets            | env vars / AWS Secrets Manager      |
+| Package manager    | pip / requirements.txt              |
 
 ---
 
-## Repository structure to build
+## Repository structure
 
 ```
 openworker/
-├── CLAUDE.md                    ← this file
-├── README.md                    ← to be written
-├── docker-compose.yml           ← single command deploy
-├── .env.example                 ← all required env vars documented
+├── CLAUDE.md                      ← this file
+├── CLAUDE_EXTENSION.md            ← architectural decisions v2
+├── OVERNIGHT_SESSION.md           ← Phase 2 runtime build brief
+├── README.md                      ← DONE
+├── STATUS.md                      ← build tracker
+├── docker-compose.yml             ← DONE — single command deploy
+├── demo.py                        ← TO BUILD — Aryan demo script
+├── .env.example                   ← all required env vars documented
+├── connectors.yaml.example        ← TO BUILD — connector config template
 ├── requirements.txt
 │
 ├── core/
 │   ├── __init__.py
-│   ├── agent_harness.py         ← MAIN FILE — wires all 5 layers
-│   ├── permission_engine.py     ← DONE — Layer 2
-│   ├── model_resolver.py        ← DONE — LLM client factory
-│   ├── input_validator.py       ← Layer 1 — TO BUILD
-│   ├── output_filter.py         ← Layer 4 — TO BUILD
-│   ├── audit_logger.py          ← Layer 5 — TO BUILD (extract from permission_engine)
-│   ├── trust_engine.py          ← trust score computation — TO BUILD
-│   └── worker_spec.py           ← spec loader (extract from permission_engine)
+│   ├── agent_harness.py           ← DONE — 5-layer harness
+│   ├── permission_engine.py       ← DONE — Layer 2
+│   ├── model_resolver.py          ← DONE — LLM client factory
+│   ├── input_validator.py         ← DONE — Layer 1 (23 tests)
+│   ├── output_filter.py           ← DONE — Layer 4 (20 tests)
+│   ├── audit_logger.py            ← DONE — Layer 5
+│   ├── constants.py               ← DONE
+│   ├── task_state.py              ← TO BUILD — TaskState + TaskRecord
+│   ├── tool_access_request.py     ← TO BUILD — worker requests new tools
+│   ├── trust_engine.py            ← TO BUILD — extract from permission_engine
+│   └── worker_spec.py             ← TO BUILD — extract from permission_engine
 │
 ├── runtime/
 │   ├── __init__.py
-│   ├── task_runner.py           ← executes a task end-to-end — TO BUILD
-│   ├── approval_router.py       ← routes approvals to Slack/email — TO BUILD
-│   ├── memory_manager.py        ← episodic + semantic memory — TO BUILD
-│   └── tool_executor.py         ← MCP tool call wrapper — TO BUILD
+│   ├── task_runner.py             ← TO BUILD (overnight session)
+│   ├── approval_router.py         ← TO BUILD (overnight session)
+│   ├── memory_manager.py          ← TO BUILD — 3 types, 3 backends
+│   └── tool_executor.py           ← TO BUILD — uses ConnectorRegistry
+│
+├── connectors/                    ← TO BUILD — pluggable tool providers
+│   ├── __init__.py
+│   ├── base.py                    ← BaseConnector ABC + ConnectorResult
+│   ├── registry.py                ← ConnectorRegistry
+│   └── providers/
+│       ├── web_search/
+│       │   ├── brave.py
+│       │   └── duckduckgo.py      ← free fallback, always works
+│       ├── messaging/
+│       │   └── slack_bot.py
+│       └── documents/
+│           └── local_file.py
+│
+├── database/
+│   └── schema.sql                 ← TO BUILD — all Supabase tables
 │
 ├── skills/
-│   ├── base/                    ← base skill SKILL.md files
+│   ├── base/
 │   │   ├── email.md
 │   │   ├── calendar.md
 │   │   ├── messaging.md
 │   │   ├── web_search.md
 │   │   ├── policy_rag.md
 │   │   └── escalation.md
-│   └── roles/                   ← role pack SKILL.md files
+│   └── roles/
 │       ├── marketer.md
 │       ├── developer.md
 │       ├── tester.md
 │       ├── code_reviewer.md
-│       ├── idea_advisor.md
+│       ├── idea_advisor.md        ← needed for Aryan demo
 │       └── customer_support.md
 │
-├── workers/                     ← worker spec YAML files
-│   ├── worker.maya.yaml         ← DONE
-│   ├── worker.codera-qa.yaml    ← DONE
-│   ├── worker.codera-review.yaml← DONE
-│   ├── worker.aryan.yaml        ← DONE
-│   └── worker.layla.yaml        ← DONE
+├── workers/
+│   ├── worker.maya.yaml           ← DONE
+│   ├── worker.codera-qa.yaml      ← DONE
+│   ├── worker.codera-review.yaml  ← DONE
+│   ├── worker.aryan.yaml          ← DONE (first demo target)
+│   └── worker.layla.yaml          ← DONE
 │
 ├── spec/
-│   └── WORKER_SPEC.md           ← DONE — the open standard document
+│   └── WORKER_SPEC.md             ← DONE — open standard document
 │
 ├── sandbox/
-│   ├── Dockerfile.worker        ← worker container definition
-│   ├── seccomp-profile.json     ← allowed syscalls
-│   └── egress-proxy/            ← network allowlist enforcement
-│       └── squid.conf
+│   ├── Dockerfile.worker          ← DONE
+│   ├── seccomp-profile.json       ← DONE
+│   └── egress-proxy/
+│       └── squid.conf             ← DONE
 │
-├── dashboard/                   ← Next.js manager UI
-│   └── (scaffold only in v0.1)
+├── dashboard/                     ← Phase 2 — scaffold only
 │
 └── tests/
-    ├── test_permission_engine.py
-    ├── test_input_validator.py
-    ├── test_output_filter.py
-    ├── test_harness.py
+    ├── test_permission_engine.py  ← TO BUILD
+    ├── test_input_validator.py    ← DONE (23 tests)
+    ├── test_output_filter.py      ← DONE (20 tests)
+    ├── test_harness.py            ← TO BUILD
     └── fixtures/
-        └── worker.test.yaml
+        └── worker.test.yaml       ← DONE
 ```
 
 ---
 
-## What is already built (from design session)
+## What is built — v0.1 complete (43 tests passing)
+
+### core/agent_harness.py — COMPLETE
+- Full 5-layer async harness
+- Mocked-LLM loop: approval pause, blocked, unknown, budget, happy path
 
 ### core/permission_engine.py — COMPLETE
-- `WorkerSpec` class — loads and validates YAML, classifies tools
-- `PermissionEngine` class — `check(tool_name, payload)` → `EngineResult`
-- `ApprovalRequest` dataclass — with `to_slack_message()` method
-- `AuditLogger` class — append-only JSONL logging
-- `Decision` enum — ALLOWED / APPROVAL / BLOCKED / UNKNOWN
-- `ABSOLUTE_BLOCKS` frozenset — hardcoded, not in YAML
+- WorkerSpec, PermissionEngine, ApprovalRequest, AuditLogger
+- Decision enum: ALLOWED / APPROVAL / BLOCKED / UNKNOWN
+- ABSOLUTE_BLOCKS frozenset — hardcoded Python, not overridable
 - Trust score nudging on approval/rejection
 
 ### core/model_resolver.py — COMPLETE
-- `ModelResolver` class — reads spec, returns (llm_client, cost_tracker)
-- `CostTracker` class — per-task and monthly budget enforcement
-- `BudgetStatus` dataclass — ok/exceeded/alert
-- `CostRecord` dataclass — per-call token + cost record
-- `roi_summary()` — CFO-friendly AI vs human cost comparison
-- Supports: anthropic, openai, ollama, vllm, openrouter, custom
+- ModelResolver, CostTracker, BudgetStatus, CostRecord
+- roi_summary() — CFO-friendly AI vs human comparison
+- 6 providers: anthropic, openai, ollama, vllm, openrouter, custom
+- require_on_prem enforced at startup
 
+### core/input_validator.py — COMPLETE (23 tests)
+### core/output_filter.py — COMPLETE (20 tests)
+### core/audit_logger.py — COMPLETE (extracted, re-exported)
+### sandbox/ — COMPLETE (Docker, seccomp, squid)
+### docker-compose.yml — COMPLETE (live: db, n8n, proxy verified)
+### README.md — COMPLETE
 ### workers/*.yaml — ALL FIVE COMPLETE
-Full specs for Maya, Codera-QA, Codera-Review, Aryan, Layla.
-Layla has special real_time + channels sections for voice.
-
 ### spec/WORKER_SPEC.md — COMPLETE
-The open standard document. Autonomy levels, tool tiers, base skills,
-role packs, blocked tools list, minimal valid spec, versioning guide.
 
 ---
 
 ## What to build next — priority order
 
-### Priority 1: core/agent_harness.py
-The main class. Wires all five layers into a single interface.
+### IMMEDIATE: Aryan demo (see OVERNIGHT_SESSION.md)
+Goal: `python demo.py "topic"` produces a research summary.
+Requires: task_runner.py, tool_executor.py, approval_router.py, demo.py
 
-```python
-class AgentHarness:
-    def __init__(self, spec_path: str):
-        # loads WorkerSpec, PermissionEngine, ModelResolver,
-        # InputValidator, OutputFilter, AuditLogger
-
-    async def run_task(self, task: str, context: dict = {}) -> HarnessResult:
-        # 1. AuditLogger.log_task_received()
-        # 2. InputValidator.validate(task) → raise or continue
-        # 3. Load worker memory from Supabase
-        # 4. Build system prompt from spec + skills + memory
-        # 5. Enter agent loop:
-        #    a. Call LLM with messages
-        #    b. Check CostTracker.check_budget() before each call
-        #    c. Parse tool_use blocks from response
-        #    d. For each tool: PermissionEngine.check(tool_name, payload)
-        #       - BLOCKED/UNKNOWN → raise PermissionDeniedError, stop task
-        #       - APPROVAL → create ApprovalRequest, pause task, notify manager
-        #       - ALLOWED → execute tool, record result
-        #    e. OutputFilter.filter(result) before returning anything
-        #    f. AuditLogger.log_action() for every step
-        # 6. Return HarnessResult
-```
-
-Design requirements for agent_harness.py:
-- async/await throughout (tool calls are I/O bound)
-- No secrets in any string that touches the LLM
-- Task timeout enforcement (from behavior.working_hours in spec)
-- Graceful handling when tool execution fails (log, continue or stop)
-- Rate limiting (max_autonomous_actions_per_hour from spec)
-- Full audit trail at every step
-- Memory load at start, memory save at end
-
-### Priority 2: core/input_validator.py
-Layer 1 of the harness.
-
-```python
-class InputValidator:
-    INJECTION_PATTERNS = [
-        "ignore previous instructions",
-        "ignore your system prompt",
-        "you are now",
-        "pretend you are",
-        "disregard your",
-        "forget everything",
-        "new instructions:",
-        "####",
-        "<|im_start|>",
-        "<|im_end|>",
-        "system:",        # raw role injection attempts
-        "[INST]",         # Llama instruction format injection
-    ]
-
-    def validate(self, task: str, worker_spec: WorkerSpec) -> ValidationResult:
-        # 1. Check for injection patterns
-        # 2. Check task is within worker's scope (role + department)
-        # 3. Enforce max input length (from spec)
-        # 4. Sanitise — strip null bytes, normalise whitespace
-        # 5. Return ValidationResult(ok, reason, sanitised_task)
-```
-
-### Priority 3: core/output_filter.py
-Layer 4 of the harness.
-
-```python
-class OutputFilter:
-    def filter(self, output: str, worker_spec: WorkerSpec) -> FilterResult:
-        # 1. PII detection and scrubbing (credit cards, SSNs, emails not in input)
-        # 2. Content policy check (violence, self-harm, etc.)
-        # 3. Format enforcement (if spec requires JSON output, validate it)
-        # 4. Length check (no runaway outputs)
-        # 5. Return FilterResult(ok, scrubbed_output, flags)
-```
-
-### Priority 4: sandbox/Dockerfile.worker
-```dockerfile
-FROM python:3.12-slim
-# read-only rootfs with tmpfs workspace
-# drop ALL capabilities
-# no network by default (docker-compose adds egress network)
-# non-root user
-# seccomp profile applied
-```
-
-### Priority 5: docker-compose.yml
-Single command that starts:
-- openworker-api (FastAPI)
-- openworker-runtime (worker executor)
-- openworker-n8n (approval workflows)
-- openworker-db (Postgres via Supabase image)
-- openworker-proxy (Squid egress proxy)
-
-IT team runs ONE command: `docker-compose up -d`
-Then opens browser to http://localhost:3000
-
-### Priority 6: README.md
-The open source launch README.
-Must answer in the first 10 lines:
-- What is it?
-- Why does it exist?
-- How do I try it right now?
+### AFTER DEMO: Extension items (see CLAUDE_EXTENSION.md)
+1. database/schema.sql
+2. core/task_state.py
+3. connectors/ module
+4. Update tool_executor.py to use ConnectorRegistry
+5. Update memory_manager.py — 3 memory types
+6. core/tool_access_request.py
+7. skills/ SKILL.md files
 
 ---
 
-## Key data models (use these exact shapes)
+## Key data models — use these exact shapes
 
 ```python
 @dataclass
@@ -323,7 +294,7 @@ class HarnessResult:
     worker_id: str
     task_id: str
     output: str | None
-    approval_id: str | None      # set if task paused for approval
+    approval_id: str | None
     error: str | None
     cost_record: CostRecord
     audit_ids: list[str]
@@ -344,98 +315,161 @@ class FilterResult:
     pii_detected: bool
     content_flagged: bool
     flags: list[str]
+
+class TaskState(str, Enum):
+    CREATED            = "created"
+    RUNNING            = "running"
+    AWAITING_TOOL      = "awaiting_tool"
+    AWAITING_APPROVAL  = "awaiting_approval"
+    APPROVED           = "approved"
+    REJECTED           = "rejected"
+    COMPLETED          = "completed"
+    FAILED             = "failed"
+    SUSPENDED          = "suspended"
+
+@dataclass
+class ConnectorResult:
+    success: bool
+    output: str
+    error: str | None = None
+    metadata: dict | None = None
+
+@dataclass
+class ToolAccessRequest:
+    request_id: str
+    worker_id: str
+    worker_name: str
+    tools_requested: list[str]
+    justification: str
+    task_context: str
+    suggested_tier: str
+    status: str
+    approved_tools: list[str]
+    rejected_tools: list[str]
+    manager_note: str | None
+    created_at: str
+    resolved_at: str | None
 ```
 
 ---
 
-## System prompt pattern for workers
-
-When building the agent loop, the system prompt must be constructed
-in this exact order (matters for the LLM):
+## System prompt construction — exact order
 
 ```
 [1] Worker identity and role
-    "You are {name}, a {role} at {company}. You report to {manager}."
-
-[2] Autonomy and approval rules
-    "Your autonomy level is {level}. Before using any tool, you must
-     confirm it is in your allowed tools list. If uncertain, do not
-     use the tool — ask your manager instead."
-
-[3] Base skill context (loaded from skills/base/*.md)
-
-[4] Role skill context (loaded from skills/roles/{pack}.md)
-
-[5] Company knowledge (retrieved via policy_rag based on task)
-
-[6] Working memory (last N interactions from Supabase)
-
+[2] Autonomy and approval rules (include request_tool_access capability)
+[3] Base skill context (skills/base/*.md)
+[4] Role skill context (skills/roles/{pack}.md)
+[5] Company knowledge — pgvector RAG retrieval on task query
+[6] Working memory — last N episodic memories from Supabase
 [7] Behavioural rules
-    "Never reveal API keys or secrets. Never claim to be human.
-     Always escalate when you are uncertain. Log your reasoning."
-
-[8] Task
-    "Your task: {sanitised_task}"
+[8] Task: {sanitised_task}
 ```
 
-The spec is NOT in the system prompt. It is enforced by the harness.
-The LLM does not need to know its own permission boundaries —
-the harness enforces them regardless of what the LLM decides.
+The spec is NOT in the system prompt.
+The harness enforces permissions regardless of LLM decisions.
 
 ---
 
-## Testing approach
+## Communication channels — all pluggable via ConnectorRegistry
 
-Every layer must have unit tests before integration.
-Test the unhappy paths first:
-- Injection attempt → validator catches it
-- Blocked tool call → permission engine stops it
-- Budget exceeded → cost tracker pauses task
-- Unknown tool → defaults to blocked
-- Worker suspended → harness refuses before any layer
+| Tool name | Primary provider | Free fallback |
+|-----------|-----------------|---------------|
+| web_search | Brave Search | DuckDuckGo |
+| web_crawl | Firecrawl | Crawl4AI (self-hosted) |
+| email | Gmail API | SMTP |
+| slack_post | Slack Bot | stdout [SLACK] |
+| sms_send | Twilio | stdout [SMS] |
+| voice_stt | Deepgram | Whisper local |
+| voice_tts | ElevenLabs | OpenAI TTS |
+| meetings | Recall.ai | stdout [MEETING] |
 
-Fixture: `tests/fixtures/worker.test.yaml`
-A minimal valid spec with deliberately permissive settings
-for testing the harness without needing real API keys.
+Meeting bots (Zoom/Teams/Meet) via Recall.ai:
+- Bot joins as named AI participant ("Maya — AI")
+- Listens for wake word ("Maya") — not always-on
+- Speaks responses via TTS when addressed
+- Produces post-meeting summary automatically
+- Phase 3 — do not build yet
 
 ---
 
-## What NOT to build in v0.1
+## ToolAccessRequest — worker requests new tools
 
-- Multi-agent coordination (L5 Lead workers) — Phase 3
-- Voice/STT/TTS for Layla — Phase 3
-- Next.js dashboard — scaffold only, full build Phase 2
-- OpenRouter integration — model_resolver has it, don't test yet
-- Custom role pack builder UI — Phase 2
-- SOC 2 / compliance tooling — Phase 4
+Workers can request tools they don't have via request_tool_access tool.
+This tool is always in the allowed tier for all workers.
+It never auto-grants — always requires manager approval.
+Routes through ApprovalRouter same as action approvals.
+On approval: spec auto-updated, audit logged.
 
-v0.1 goal: one worker (Maya), one task, one approval, full audit trail.
-Everything else is scaffolded but not production-ready.
+Example: Maya says "I need Canva and Meta Ads for this campaign."
+Manager sees Slack request, approves Canva, rejects Meta Ads.
+Maya's spec updated with canva_create in tools.allowed.
+
+---
+
+## What NOT to build until Phase 3+
+
+- Voice/STT/TTS for Layla
+- Meeting bots via Recall.ai
+- Next.js dashboard (Phase 2 — brief in CLAUDE_DASHBOARD.md)
+- Multi-agent coordination (L5 Lead workers)
+- OpenRouter live testing
+- Custom role pack builder UI
+- SOC 2 / compliance tooling
+- Desktop app (Electron/Tauri)
+
+---
+
+## Demo goal — definition of done for v0.1
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+python demo.py "Summarise the competitive landscape for AI employee platforms"
+```
+
+Expected:
+```
+🤖 OpenWorker Demo
+Worker: workers/worker.aryan.yaml
+Task: Summarise the competitive landscape for AI employee platforms
+──────────────────────────────────────────────
+✅ Task completed
+[executive summary output]
+
+💰 Cost: $0.004231
+📋 Audit: 8 entries written
+```
+
+This demo is shown to one human outside the household within 7 days.
+Everything in this codebase serves that goal.
 
 ---
 
 ## Open source positioning
 
 License: MIT
+Domain: openworker.io
 Tagline: "The open standard for employing AI inside organisations."
 GitHub topics: ai-agents, llm, enterprise-ai, ai-governance,
-               openworker, agent-framework, anthropic, claude
+               openworker, agent-framework, anthropic, python
 
-This is NOT competing with CrewAI or LangGraph.
+This is NOT competing with CrewAI or LangGraph (agent builders).
 This is the HR and governance layer that sits ON TOP of them.
+Viktor/Nextiva = closed SaaS with no governance.
+OpenWorker = open source, self-hosted, governed.
 
 ---
 
 ## Notes for Claude Code
 
-- Read permission_engine.py and model_resolver.py fully before writing
-  agent_harness.py — the data models are already defined there
-- WorkerSpec is in permission_engine.py — do not redefine it
-- CostTracker is in model_resolver.py — do not redefine it
-- AuditLogger is in permission_engine.py — extract it to audit_logger.py
-  as first refactor step
-- Use async/await throughout core/ and runtime/ modules
-- Type hints on everything — this is open source, readability matters
+- Read STATUS.md before every session to know current state
+- WorkerSpec lives in permission_engine.py — do not redefine
+- CostTracker lives in model_resolver.py — do not redefine
+- Do not change agent_harness.py public API — 43 tests depend on it
+- Use async/await throughout core/ and runtime/
+- Type hints on everything
 - Docstrings on every class and public method
-- No print() statements — use Python logging module
+- No print() — use logging module (except demo.py — CLI tool)
 - No hardcoded strings — constants go in core/constants.py
+- Every connector must have a graceful fallback
+- Every new module needs tests before integration

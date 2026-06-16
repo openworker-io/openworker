@@ -45,6 +45,7 @@ EVENT_TOOL_FAILED = "tool_failed"
 EVENT_TASK_PAUSED_FOR_APPROVAL = "task_paused_for_approval"
 EVENT_TASK_COMPLETED = "task_completed"
 EVENT_TASK_FAILED = "task_failed"
+EVENT_TOOL_ACCESS_REQUESTED = "tool_access_requested"
 
 
 # ─────────────────────────────────────────────
@@ -69,3 +70,13 @@ REASON_LLM_ERROR = "llm_error"
 
 SKILLS_BASE_DIR = "skills/base"
 SKILLS_ROLES_DIR = "skills/roles"
+
+
+# ─────────────────────────────────────────────
+# TOOL ACCESS REQUESTS
+# ─────────────────────────────────────────────
+
+# Always available to every worker regardless of spec — it's a
+# communication tool (asks a manager for new tools), not an action
+# tool, and it never auto-grants anything.
+REQUEST_TOOL_ACCESS_TOOL = "request_tool_access"

@@ -58,6 +58,7 @@ from core.constants import (
     EVENT_TASK_RECEIVED,
     EVENT_TASK_REJECTED,
     EVENT_TASK_VALIDATED,
+    EVENT_TOOL_ACCESS_REQUESTED,
     EVENT_TOOL_EXECUTED,
     EVENT_TOOL_FAILED,
     MAX_AGENT_ITERATIONS,
@@ -71,12 +72,14 @@ from core.constants import (
     REASON_RATE_LIMITED,
     REASON_TIMEOUT,
     REASON_WORKER_NOT_ACTIVE,
+    REQUEST_TOOL_ACCESS_TOOL,
     SKILLS_BASE_DIR,
     SKILLS_ROLES_DIR,
 )
 from core.audit_logger import AuditLogger
 from core.model_resolver import CostRecord, CostTracker, ModelResolver
 from core.permission_engine import PermissionEngine, WorkerSpec, WorkerStatus
+from core.tool_access_request import ToolAccessRequest
 
 logger = logging.getLogger("openworker.harness")
 
@@ -115,6 +118,16 @@ class SupportsValidate(Protocol):
 
 class SupportsFilter(Protocol):
     def filter(self, output: str, worker_spec: WorkerSpec) -> Any: ...
+
+
+class SupportsMemory(Protocol):
+    async def load(self, limit: int = 10) -> list[str]: ...
+    async def save(self, task: str, output: str, cost_usd: float = 0.0, approval_id: str | None = None) -> None: ...
+
+
+class SupportsApprovalRouter(Protocol):
+    async def send(self, approval: Any) -> bool: ...
+    async def send_tool_access_request(self, request: ToolAccessRequest) -> bool: ...
 
 
 @dataclass
@@ -256,6 +269,8 @@ class AgentHarness:
         input_validator: SupportsValidate | None = None,
         output_filter: SupportsFilter | None = None,
         task_timeout_seconds: float = DEFAULT_TASK_TIMEOUT_SECONDS,
+        memory_manager: SupportsMemory | None = None,
+        approval_router: SupportsApprovalRouter | None = None,
     ):
         self.spec = WorkerSpec(spec_path)
         self.audit = AuditLogger(audit_log_path)
@@ -272,6 +287,8 @@ class AgentHarness:
         )
         self.tool_executor = tool_executor or _default_tool_executor
         self.task_timeout_seconds = task_timeout_seconds
+        self._memory_manager = memory_manager
+        self._approval_router = approval_router
 
         self._provider: str = self.spec._raw.get("model", {}).get("provider", "anthropic")
         self._model_name: str = self.spec._raw.get("model", {}).get("name", "")
@@ -417,7 +434,7 @@ class AgentHarness:
             # Done — no more tool calls
             if response.stop_reason != "tool_use" or not tool_uses:
                 final_text = "".join(b.text for b in response.content if b.type == "text")
-                return await self._finish(task_id, final_text, messages, audit_ids, _result)
+                return await self._finish(task_id, task, final_text, messages, audit_ids, _result)
 
             # 5c/5d. Gate and execute each requested tool
             messages.append({"role": "assistant", "content": response.content})
@@ -425,6 +442,16 @@ class AgentHarness:
 
             for block in tool_uses:
                 payload = dict(block.input) if isinstance(block.input, dict) else {}
+
+                if block.name == REQUEST_TOOL_ACCESS_TOOL:
+                    # Always allowed, never blocked, never executed as a real
+                    # action — just notifies a manager. Skips the permission
+                    # engine and rate limiter entirely; the task continues.
+                    tool_results.append(
+                        await self._handle_tool_access_request(task_id, block, payload, audit_ids)
+                    )
+                    continue
+
                 check = self.engine.check(block.name, payload)  # Layer 2 + Layer 5
                 audit_ids.append(check.audit_id)
 
@@ -472,6 +499,42 @@ class AgentHarness:
         audit_ids.append(self._log(EVENT_TASK_FAILED, task_id, reason=REASON_MAX_ITERATIONS))
         return _result(False, error=f"{REASON_MAX_ITERATIONS}: {MAX_AGENT_ITERATIONS} iterations")
 
+    async def _handle_tool_access_request(
+        self, task_id: str, block: Any, payload: dict, audit_ids: list[str]
+    ) -> dict:
+        """
+        Records a ToolAccessRequest and notifies the manager (if an
+        approval_router is injected). Never grants anything — the worker
+        spec is only ever edited by a human. The task continues regardless.
+        """
+        request = ToolAccessRequest(
+            worker_id=self.spec.worker_id,
+            worker_name=self.spec.worker_name,
+            tools_requested=list(payload.get("tools", [])),
+            justification=str(payload.get("justification", "")),
+            task_context=payload.get("action_summary", "") or payload.get("content_preview", ""),
+            suggested_tier=payload.get("suggested_tier", "approval_required"),
+        )
+        audit_ids.append(
+            self._log(
+                EVENT_TOOL_ACCESS_REQUESTED, task_id,
+                request_id=request.request_id, tools=request.tools_requested,
+            )
+        )
+        if self._approval_router is not None:
+            await self._approval_router.send_tool_access_request(request)
+        else:
+            logger.info("Tool access requested (%s) — no approval_router configured to notify", request.tools_requested)
+
+        return {
+            "type": "tool_result",
+            "tool_use_id": block.id,
+            "content": (
+                f"Request recorded ({request.request_id}) for tools {request.tools_requested}. "
+                f"Your manager has been notified. Continue the task with your current tools while you wait."
+            ),
+        }
+
     async def _execute_tool(self, task_id: str, block: Any, audit_ids: list[str]) -> dict:
         """Run one ALLOWED tool. Failures are returned to the model, not raised."""
         try:
@@ -494,6 +557,7 @@ class AgentHarness:
     async def _finish(
         self,
         task_id: str,
+        task: str,
         final_text: str,
         messages: list[dict],
         audit_ids: list[str],
@@ -511,7 +575,7 @@ class AgentHarness:
             )
             return _result(False, error=f"{REASON_OUTPUT_BLOCKED}: {filtered.flags}")
 
-        await self._save_memory(messages, filtered.scrubbed_output)
+        await self._save_memory(task, filtered.scrubbed_output)
         audit_ids.append(
             self._log(
                 EVENT_TASK_COMPLETED, task_id,
@@ -582,6 +646,40 @@ class AgentHarness:
                         },
                     }
                 )
+
+        # Always available, regardless of spec — a communication tool, not
+        # an action tool. Never auto-grants; always requires manager review.
+        defs.append(
+            {
+                "name": REQUEST_TOOL_ACCESS_TOOL,
+                "description": (
+                    "Request access to tools you don't currently have, if you believe they would "
+                    "significantly improve your output for this task. This notifies your manager "
+                    "for review — it never grants access by itself. Continue the task with your "
+                    "existing tools while you wait."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "tools": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Names of the tools you're requesting",
+                        },
+                        "justification": {
+                            "type": "string",
+                            "description": "Why these tools would help with this task",
+                        },
+                        "suggested_tier": {
+                            "type": "string",
+                            "enum": ["allowed", "approval_required"],
+                            "description": "Tier you think these tools should sit at, if granted",
+                        },
+                    },
+                    "required": ["tools", "justification"],
+                },
+            }
+        )
         return defs
 
     # ── System prompt (exact section order from the brief) ─
@@ -613,7 +711,12 @@ class AgentHarness:
             f"Your autonomy level is {self.spec.autonomy_level} "
             f"({raw.get('autonomy', {}).get('label', '')}). Before using any tool, "
             f"confirm it is in your allowed tools list. If uncertain, do not use "
-            f"the tool — ask your manager instead."
+            f"the tool — ask your manager instead.\n\n"
+            f"If you believe a tool you don't currently have access to would "
+            f"significantly improve your output for this task, you may call "
+            f"{REQUEST_TOOL_ACCESS_TOOL} with the tools you want and why. This "
+            f"notifies your manager for review — it never grants access by itself. "
+            f"Continue the task with what you have while you wait."
         )
 
         # [3] Base skill context
@@ -693,18 +796,35 @@ class AgentHarness:
             self._action_times.popleft()
         return len(self._action_times) < self._max_actions_per_hour()
 
-    # ── Stubs (filled in by runtime/ modules) ─────────────
+    # ── Memory / approval delegation (runtime/ modules, optional) ─
 
     async def _load_memory(self) -> list[str]:
-        """Episodic memory load — Supabase-backed in runtime/memory_manager.py."""
-        return []
+        """Episodic memory load. Delegates to an injected memory_manager, else empty."""
+        if self._memory_manager is None:
+            return []
+        return await self._memory_manager.load(limit=10)
 
-    async def _save_memory(self, messages: list[dict], output: str) -> None:
-        """Episodic memory save — Supabase-backed in runtime/memory_manager.py."""
+    async def _save_memory(self, task: str, output: str) -> None:
+        """Episodic memory save. No-op when no memory_manager is injected."""
+        if self._memory_manager is None:
+            return
+        await self._memory_manager.save(
+            task=task, output=output, cost_usd=self.cost_tracker.task_spent_usd
+        )
 
     async def _notify_approval(self, approval_id: str | None) -> None:
-        """Slack/email routing lands in runtime/approval_router.py."""
-        logger.info("Approval %s pending — notify manager via approval_router", approval_id)
+        """
+        Delegates to an injected approval_router (e.g. Slack). Falls back to a
+        log line when none is configured — the task still pauses correctly.
+        """
+        if self._approval_router is None or approval_id is None:
+            logger.info("Approval %s pending — no approval_router configured", approval_id)
+            return
+        approval = self.engine.get_approval(approval_id)
+        if approval is None:
+            logger.warning("Approval %s not found in engine — cannot notify", approval_id)
+            return
+        await self._approval_router.send(approval)
 
     # ── Helpers ───────────────────────────────────────────
 
