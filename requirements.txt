@@ -8,8 +8,7 @@ pydantic>=2.0
 supabase>=2.0
 psycopg2-binary>=2.9
 
-# Async
-asyncio
+# Async (asyncio is stdlib — do not pip install it)
 aiohttp>=3.9
 
 # Utilities

@@ -22,8 +22,6 @@ Decision flow:
 
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -32,6 +30,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml  # pip install pyyaml
+
+# AuditLogger lives in core/audit_logger.py (Layer 5). Re-exported here
+# so existing `from core.permission_engine import AuditLogger` keeps working.
+from core.audit_logger import AuditLogger
 
 
 # ─────────────────────────────────────────────
@@ -297,46 +299,6 @@ class WorkerSpec:
         if tool_name in self._approval:
             return Decision.APPROVAL
         return Decision.UNKNOWN
-
-
-# ─────────────────────────────────────────────
-# AUDIT LOGGER
-# ─────────────────────────────────────────────
-
-class AuditLogger:
-    """
-    Writes every permission decision to an append-only JSONL audit log.
-    In production, this should write to Supabase or a SIEM.
-    task_logger skill in the spec means this cannot be bypassed.
-    """
-
-    def __init__(self, log_path: str | Path = "audit.jsonl"):
-        self._path = Path(log_path)
-
-    def log(self, result: EngineResult, payload: dict | None = None):
-        entry = result.to_dict()
-        if payload:
-            # Never log raw payload — only a hash for verification
-            entry["payload_hash"] = hashlib.sha256(
-                json.dumps(payload, sort_keys=True).encode()
-            ).hexdigest()
-        entry["payload_logged"] = False  # PII scrubbing: never store content
-        with open(self._path, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-
-    def log_approval_event(self, approval: ApprovalRequest, event: str, by: str):
-        entry = {
-            "audit_id":    str(uuid.uuid4()),
-            "timestamp":   datetime.now(timezone.utc).isoformat(),
-            "event_type":  "approval_lifecycle",
-            "event":       event,
-            "approval_id": approval.approval_id,
-            "worker_id":   approval.worker_id,
-            "tool_name":   approval.tool_name,
-            "resolved_by": by,
-        }
-        with open(self._path, "a") as f:
-            f.write(json.dumps(entry) + "\n")
 
 
 # ─────────────────────────────────────────────

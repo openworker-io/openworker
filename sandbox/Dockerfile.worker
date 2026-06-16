@@ -1,0 +1,63 @@
+# ============================================================
+# OpenWorker — Worker Container (Layer 3: Execution Sandbox)
+# ============================================================
+# One container per worker. The worker process has:
+#   - no filesystem write access (read-only rootfs + tmpfs workspace)
+#   - no capabilities
+#   - no network except via the egress proxy allowlist
+#   - a seccomp syscall allowlist
+#   - a non-root user
+#
+# The Dockerfile prepares the image; isolation is enforced at runtime.
+# docker-compose.yml applies these flags — for a manual run:
+#
+#   docker run --rm \
+#     --read-only \
+#     --tmpfs /workspace:rw,noexec,nosuid,size=256m,uid=10001,gid=10001 \
+#     --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+#     --cap-drop ALL \
+#     --security-opt no-new-privileges \
+#     --security-opt seccomp=sandbox/seccomp-profile.json \
+#     --network openworker-egress \
+#     -e HTTPS_PROXY=http://openworker-proxy:3128 \
+#     -e ANTHROPIC_API_KEY \
+#     openworker-worker
+#
+# Secrets are injected via env vars at runtime only (design principle
+# #4) — never baked into the image, never written to the spec.
+# ============================================================
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app
+
+# Non-root user with a fixed UID (no shell, no home-dir surprises)
+RUN groupadd --gid 10001 worker \
+    && useradd --uid 10001 --gid worker --no-create-home \
+       --shell /usr/sbin/nologin worker
+
+WORKDIR /app
+
+# Dependencies first — keeps the layer cached across code changes
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Application code. Worker specs are mounted read-only at runtime so a
+# worker can never modify its own spec (design principle #5):
+#   -v ./workers:/app/workers:ro
+COPY core/ ./core/
+COPY skills/ ./skills/
+# COPY runtime/ ./runtime/        # uncomment when runtime/ lands
+
+USER worker
+
+# Writable scratch space — tmpfs at runtime, wiped on exit
+WORKDIR /workspace
+
+# Entry point is the task runner (runtime/task_runner.py — next build
+# priority). Until it lands, override CMD when running the container.
+CMD ["python", "-m", "runtime.task_runner"]

@@ -1,0 +1,151 @@
+# ============================================================
+# OpenWorker — single-command deploy
+# ============================================================
+#   cp .env.example .env   (fill in keys)
+#   docker compose up -d
+#
+# Starts today (v0.1):
+#   openworker-db       Postgres + pgvector       :5432
+#   openworker-n8n      approval workflows        :5678
+#   openworker-proxy    egress allowlist (squid)  internal only
+#
+# Behind the "app" profile until runtime/ + api/ land:
+#   docker compose --profile app up -d
+#   openworker-api      FastAPI                   :8000
+#   openworker-runtime  hardened worker executor  no ports
+#
+# Dashboard (Next.js, :3000) is Phase 2.
+#
+# Network design:
+#   internal  — db, n8n, api, runtime. internal:true = no internet.
+#   egress    — runtime + proxy only. Workers reach the world solely
+#               through the squid allowlist (Layer 3).
+#   default   — proxy + n8n bridge out to the internet.
+# ============================================================
+
+name: openworker
+
+services:
+
+  # ── Database ───────────────────────────────────────────
+  # pgvector/pgvector = Postgres 16 with pgvector baked in.
+  # Swap to a supabase/postgres pinned tag if you need the full
+  # Supabase extension set locally.
+  openworker-db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: openworker
+      POSTGRES_USER: openworker
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    ports:
+      - "${DB_HOST_PORT:-5432}:5432"
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openworker -d openworker"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Approval workflows ─────────────────────────────────
+  openworker-n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    environment:
+      N8N_PORT: "5678"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: openworker-db
+      DB_POSTGRESDB_DATABASE: openworker
+      DB_POSTGRESDB_USER: openworker
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+    volumes:
+      - n8n-data:/home/node/.n8n
+    ports:
+      - "${N8N_HOST_PORT:-5678}:5678"
+    networks: [internal, default]   # default = outbound to Slack
+    depends_on:
+      openworker-db:
+        condition: service_healthy
+
+  # ── Egress proxy (Layer 3 network allowlist) ───────────
+  openworker-proxy:
+    image: ubuntu/squid:latest
+    restart: unless-stopped
+    volumes:
+      - ./sandbox/egress-proxy/squid.conf:/etc/squid/squid.conf:ro
+    networks: [egress, default]     # bridges workers to the allowlist
+    healthcheck:
+      test: ["CMD-SHELL", "squid -k check"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── API (FastAPI) — enable with --profile app ──────────
+  openworker-api:
+    profiles: [app]
+    build:
+      context: .
+      dockerfile: sandbox/Dockerfile.worker
+    command: ["python", "-m", "api.server"]   # TO BUILD
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://openworker:${POSTGRES_PASSWORD}@openworker-db:5432/openworker
+      OPENWORKER_ENV: ${OPENWORKER_ENV:-development}
+      OPENWORKER_LOG_LEVEL: ${OPENWORKER_LOG_LEVEL:-verbose}
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    networks: [internal]
+    depends_on:
+      openworker-db:
+        condition: service_healthy
+
+  # ── Worker runtime — hardened, enable with --profile app
+  # Every flag here is Layer 3 of the harness. Do not relax them
+  # for convenience; fix the seccomp/egress allowlists instead.
+  openworker-runtime:
+    profiles: [app]
+    build:
+      context: .
+      dockerfile: sandbox/Dockerfile.worker
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /workspace:rw,noexec,nosuid,size=256m,uid=10001,gid=10001
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./sandbox/seccomp-profile.json
+    environment:
+      # Secrets arrive here at runtime only — never in specs or images
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      HTTPS_PROXY: http://openworker-proxy:3128
+      HTTP_PROXY: http://openworker-proxy:3128
+      NO_PROXY: openworker-db,openworker-n8n
+      DATABASE_URL: postgresql://openworker:${POSTGRES_PASSWORD}@openworker-db:5432/openworker
+      OPENWORKER_AUDIT_PATH: /workspace/audit.jsonl
+    volumes:
+      # Worker cannot modify its own spec (design principle #5)
+      - ./workers:/app/workers:ro
+    networks: [internal, egress]    # internet only via the proxy
+    depends_on:
+      openworker-db:
+        condition: service_healthy
+      openworker-proxy:
+        condition: service_started
+
+networks:
+  internal:
+    internal: true                  # no direct internet for app services
+  egress:
+    internal: true                  # workers ↔ proxy only
+  default: {}                       # proxy + n8n bridge out
+
+volumes:
+  db-data:
+  n8n-data:
