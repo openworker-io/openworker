@@ -440,6 +440,10 @@ class PermissionEngine:
         return [a for a in self._pending_approvals.values()
                 if a.status == ApprovalStatus.PENDING]
 
+    def get_approval(self, approval_id: str) -> ApprovalRequest | None:
+        """Look up one approval request by id — used by the approval router."""
+        return self._pending_approvals.get(approval_id)
+
     def expire_stale_approvals(self):
         """
         Called by a scheduler (e.g. every 30 min via n8n).

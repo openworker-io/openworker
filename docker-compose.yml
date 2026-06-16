@@ -40,6 +40,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - db-data:/var/lib/postgresql/data
+      # postgres runs every .sql file here, in name order, ONLY on a
+      # fresh (empty) data volume — i.e. the container's first startup.
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     ports:
       - "${DB_HOST_PORT:-5432}:5432"
     networks: [internal]

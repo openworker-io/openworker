@@ -1,0 +1,48 @@
+# connectors.yaml — company-specific connector configuration
+# Copy this file to connectors.yaml and fill in the providers you use.
+# connectors.yaml is gitignored — it holds which *providers* you use,
+# never the credentials themselves (those stay in .env, referenced
+# here only by env var name).
+#
+# Every capability below has a free/local fallback that needs no key,
+# so OpenWorker works out of the box even with this file absent —
+# see the built-in defaults in connectors/registry.py.
+
+connectors:
+  web_search:
+    provider: brave
+    api_key_env: BRAVE_API_KEY
+    fallback: duckduckgo        # free, no key needed
+
+  web_crawl:
+    provider: firecrawl
+    api_key_env: FIRECRAWL_KEY
+    fallback: crawl4ai          # self-hosted — not implemented yet (v0.1)
+
+  sms_send:
+    provider: twilio
+    account_sid_env: TWILIO_ACCOUNT_SID
+    auth_token_env: TWILIO_AUTH_TOKEN
+    from_number_env: TWILIO_FROM_NUMBER
+    # no connector implemented yet (v0.1) — Phase 2
+
+  voice_stt:
+    provider: deepgram
+    api_key_env: DEEPGRAM_API_KEY
+    fallback: whisper_local      # not implemented yet (v0.1) — Phase 3 (Layla)
+
+  voice_tts:
+    provider: elevenlabs
+    api_key_env: ELEVENLABS_API_KEY
+    fallback: openai_tts         # not implemented yet (v0.1) — Phase 3 (Layla)
+
+  documents:
+    provider: local_file         # writes markdown into /tmp/worker-workspace/{task_id}/
+    # no api key needed — this is the only implemented provider in v0.1.
+    # Swap in a real google_docs / notion provider here once built.
+
+  slack:
+    provider: slack_bot
+    bot_token_env: SLACK_BOT_TOKEN
+    webhook_env: SLACK_WEBHOOK_URL
+    fallback: stdout              # prints to the log if Slack isn't configured
